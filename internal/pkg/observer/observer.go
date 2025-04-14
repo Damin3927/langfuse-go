@@ -38,16 +38,22 @@ func (o *Observer[T]) Flush() {
 }
 
 func (o *Observer[T]) Wait(ctx context.Context) {
+	// タイムアウト付きのコンテキストを作成
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	done := make(chan struct{})
 	go func() {
 		o.handler.flushAndWait()
-		done <- struct{}{}
+		close(done)
 	}()
 
 	select {
-	case <-ctx.Done():
+	case <-waitCtx.Done():
+		// タイムアウトまたは親コンテキストがキャンセルされた場合
 		return
 	case <-done:
+		// 正常に完了
 		return
 	}
 }

@@ -40,34 +40,63 @@ func (h *handler[T]) withTick(period time.Duration) *handler[T] {
 
 func (h *handler[T]) listen(ctx context.Context) {
 	ticker := time.NewTicker(h.tickerPeriod)
+	defer ticker.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			// コンテキストがキャンセルされたらgoroutineを終了
+			close(h.commandCh)
+			return
 		case <-ticker.C:
-			go h.handle(ctx)
+			// バックグラウンド処理のためのコンテキストを作成
+			// 親コンテキストがキャンセルされても、この処理は短時間で完了するようにタイムアウトを設定
+			handleCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			h.handle(handleCtx)
+			cancel()
 		case cmd, ok := <-h.commandCh:
 			if !ok {
 				return
 			}
 
-			h.handle(ctx)
+			// 明示的なflush命令のためのコンテキスト
+			handleCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			h.handle(handleCtx)
+			cancel()
+
 			if cmd == commandFlushAndWait {
 				ticker.Stop()
 				close(h.commandCh)
+				return
 			}
 		}
 	}
 }
 
 func (h *handler[T]) handle(ctx context.Context) {
-	h.fn(ctx, h.queue.All())
+	events := h.queue.All()
+	if len(events) > 0 {
+		h.fn(ctx, events)
+	}
 }
 
 func (h *handler[T]) flush() {
-	h.commandCh <- commanFlush
+	select {
+	case h.commandCh <- commanFlush:
+	default:
+		// チャネルがブロックされている場合はスキップ
+	}
 }
 
 func (h *handler[T]) flushAndWait() {
-	h.commandCh <- commandFlushAndWait
-	<-h.commandCh
+	select {
+	case h.commandCh <- commandFlushAndWait:
+		// チャネルが閉じられていない場合は待機
+		_, ok := <-h.commandCh
+		if !ok {
+			return
+		}
+	default:
+		// チャネルがブロックされている場合は既に終了していると判断
+	}
 }

@@ -30,9 +30,18 @@ func New(ctx context.Context) *Langfuse {
 		observer: observer.NewObserver(
 			ctx,
 			func(ctx context.Context, events []model.IngestionEvent) {
+				if len(events) == 0 {
+					return
+				}
+
 				err := ingest(ctx, client, events)
 				if err != nil {
-					fmt.Println(err)
+					// コンテキストキャンセルによるエラーの場合は無視
+					if ctx.Err() != nil {
+						return
+					}
+					// その他のエラーはログに出力
+					fmt.Printf("Langfuse ingestion error: %v\n", err)
 				}
 			},
 		),
@@ -47,12 +56,20 @@ func (l *Langfuse) WithFlushInterval(d time.Duration) *Langfuse {
 }
 
 func ingest(ctx context.Context, client *api.Client, events []model.IngestionEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	// タイムアウト付きのコンテキストを作成
+	ingestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	req := api.Ingestion{
 		Batch: events,
 	}
 
 	res := api.IngestionResponse{}
-	return client.Ingestion(ctx, &req, &res)
+	return client.Ingestion(ingestCtx, &req, &res)
 }
 
 func (l *Langfuse) Trace(t *model.Trace) (*model.Trace, error) {
@@ -220,11 +237,16 @@ func (l *Langfuse) createTrace(traceName string) (string, error) {
 		return "", errTrace
 	}
 
-	return trace.ID, fmt.Errorf("unable to get trace ID")
+	// バグ修正: エラーを返すのではなくトレースIDを返す
+	return trace.ID, nil
 }
 
 func (l *Langfuse) Flush(ctx context.Context) {
-	l.observer.Wait(ctx)
+	// タイムアウト付きのコンテキストを作成
+	flushCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	l.observer.Wait(flushCtx)
 }
 
 func buildID(id *string) string {
